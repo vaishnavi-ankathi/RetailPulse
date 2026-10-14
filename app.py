@@ -1,5 +1,9 @@
 import streamlit as st
 import pandas as pd
+import os
+import io
+import zipfile
+import requests
 from prophet import Prophet
 from sklearn.ensemble import RandomForestClassifier
 from sklearn.cluster import KMeans
@@ -16,11 +20,29 @@ st.write(
 )
 file_path = "online_retail_II.xlsx"
 
-df1 = pd.read_excel(file_path, sheet_name="Year 2009-2010")
+if os.path.exists(file_path):
+    df1 = pd.read_excel(file_path, sheet_name="Year 2009-2010")
+    df2 = pd.read_excel(file_path, sheet_name="Year 2010-2011")
+    df = pd.concat([df1, df2], ignore_index=True)
 
-df2 = pd.read_excel(file_path, sheet_name="Year 2010-2011")
+else:
+    st.info("Downloading the Online Retail II dataset...")
 
-df = pd.concat([df1, df2], ignore_index=True)
+    url = "https://archive.ics.uci.edu/static/public/502/online+retail+ii.zip"
+    response = requests.get(url, timeout=180)
+    response.raise_for_status()
+
+    with zipfile.ZipFile(io.BytesIO(response.content)) as z:
+        excel_name = next(
+            name for name in z.namelist()
+            if name.lower().endswith(".xlsx")
+        )
+        excel_bytes = z.read(excel_name)
+
+    excel_data = pd.ExcelFile(io.BytesIO(excel_bytes))
+    df1 = pd.read_excel(excel_data, sheet_name="Year 2009-2010")
+    df2 = pd.read_excel(excel_data, sheet_name="Year 2010-2011")
+    df = pd.concat([df1, df2], ignore_index=True)
 
 df["StockCode"] = df["StockCode"].astype(str)
 
