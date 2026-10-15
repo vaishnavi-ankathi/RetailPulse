@@ -8,7 +8,7 @@ from prophet import Prophet
 from sklearn.ensemble import RandomForestClassifier
 from sklearn.cluster import KMeans
 from sklearn.model_selection import train_test_split
-from sklearn.metrics import accuracy_score, classification_report
+from sklearn.metrics import accuracy_score, classification_report, roc_auc_score
 
 st.sidebar.title("RetailPulse Dashboard")
 st.sidebar.write("Customer & Sales Analytics")
@@ -463,10 +463,26 @@ X_train, X_test, y_train, y_test = train_test_split(
     X, y, test_size=0.2, random_state=42, stratify=y
 )
 
-model = RandomForestClassifier(n_estimators=100, random_state=42)
+model = RandomForestClassifier(
+    n_estimators=200,
+    max_depth=10,
+    min_samples_split=10,
+    min_samples_leaf=5,
+    random_state=42,
+    class_weight="balanced"
+)
 model.fit(X_train, y_train)
 
 predictions = model.predict(X_test)
+auc = roc_auc_score(y_test, model.predict_proba(X_test)[:, 1])
+probabilities = model.predict_proba(X_test)[:, 1]
+
+top_20_count = max(1, int(len(probabilities) * 0.20))
+
+top_20_indices = probabilities.argsort()[::-1][:top_20_count]
+
+precision_top_20 = y_test.iloc[top_20_indices].mean()
+
 report = classification_report(
     y_test,
     predictions,
@@ -481,6 +497,8 @@ accuracy = accuracy_score(y_test, predictions)
 
 st.subheader("Random Forest Churn Prediction Results")
 st.write("Model accuracy:", round(accuracy * 100, 2), "%")
+st.write("AUC-ROC Score:", round(auc, 3))
+st.write("Precision@Top 20%:", round(precision_top_20, 3))
 st.write("Training customers:", len(X_train))
 st.write("Testing customers:", len(X_test))
 
