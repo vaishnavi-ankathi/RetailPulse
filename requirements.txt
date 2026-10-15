@@ -5,3 +5,5 @@ scikit-learn
 prophet
 matplotlib
 plotly
+requests
+tensorflow
