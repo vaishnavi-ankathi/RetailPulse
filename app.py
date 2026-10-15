@@ -1,5 +1,9 @@
 import streamlit as st
 import pandas as pd
+import numpy as np
+from sklearn.preprocessing import MinMaxScaler
+from tensorflow.keras.models import Sequential
+from tensorflow.keras.layers import LSTM, Dense
 import os
 import io
 import zipfile
@@ -184,7 +188,9 @@ monthly_sales = (
     .reset_index()
 )
 
-monthly_sales.columns = ["Date", "Sales"]
+monthly_sales.columns = ["date", "sales"]
+st.write("Monthly sales columns:", monthly_sales.columns.tolist())
+monthly_sales["date"] = pd.to_datetime(monthly_sales["date"])
 
 st.write("Monthly sales data prepared for forecasting")
 st.dataframe(monthly_sales.head(10))
@@ -216,10 +222,84 @@ forecast_data = monthly_sales.rename(
 model = Prophet()
 
 model.fit(forecast_data)
+# Prepare daily sales data for LSTM
+daily_sales = monthly_sales.copy()
+daily_sales.columns = ["date", "sales"]
+daily_sales["date"] = pd.to_datetime(daily_sales["date"])
+daily_sales = daily_sales.set_index("date").resample("D")["sales"].sum().reset_index()
+st.write("Daily sales columns:", daily_sales.columns.tolist())
 
-future = model.make_future_dataframe(periods=6, freq="ME")
+#Prepare sales values for LSTM training
+daily_sales = daily_sales.sort_values("date")
+daily_sales["sales"] = daily_sales["sales"].fillna(0)
+
+scaler = MinMaxScaler()
+scaled_sales = scaler.fit_transform(daily_sales[["sales"]])
+
+sequence_length = 30
+X_lstm = []
+y_lstm = []
+
+for i in range(sequence_length, len(scaled_sales)):
+    X_lstm.append(scaled_sales[i-sequence_length:i, 0])
+    y_lstm.append(scaled_sales[i, 0])
+
+X_lstm = np.array(X_lstm).reshape(-1, sequence_length, 1)
+y_lstm = np.array(y_lstm)
+
+# Build and train the LSTM model
+if len(X_lstm) > 0:
+    lstm_model = Sequential([
+        LSTM(50, activation="tanh", input_shape=(sequence_length, 1)),
+        Dense(1)
+    ])
+
+    lstm_model.compile(
+        optimizer="adam",
+        loss="mean_squared_error"
+    )
+
+    lstm_model.fit(
+        X_lstm,
+        y_lstm,
+        epochs=10,
+        batch_size=32,
+        verbose=0
+    )
+
+        # Generate LSTM predictions
+    last_sequence = scaled_sales[-sequence_length:].reshape(1, sequence_length, 1)
+    lstm_predictions = []
+
+    for _ in range(30):
+        next_prediction = lstm_model.predict(last_sequence, verbose=0)
+        lstm_predictions.append(next_prediction[0, 0])
+        last_sequence = np.append(
+            last_sequence[:, 1:, :],
+            next_prediction.reshape(1, 1, 1),
+            axis=1
+        )
+
+    lstm_predictions = scaler.inverse_transform(
+        np.array(lstm_predictions).reshape(-1, 1)
+    ).flatten()
+
+future = model.make_future_dataframe(periods=30, freq="D")
 
 forecast = model.predict(future)
+
+# Combine Prophet and LSTM forecasts
+prophet_future = forecast.tail(30).reset_index(drop=True)
+
+if len(prophet_future) == len(lstm_predictions):
+    ensemble_predictions = (
+        prophet_future["yhat"].to_numpy() + lstm_predictions
+    ) / 2
+
+    ensemble_forecast_df = pd.DataFrame({
+        "Date": prophet_future["ds"],
+        "Ensemble Predicted Sales": ensemble_predictions
+    })
 
 st.subheader("Forecast Accuracy")
 
@@ -386,6 +466,29 @@ rfm["Churn Risk"] = rfm["recency"].apply(
 st.subheader("Customer Churn Risk")
 st.dataframe(rfm.head(10))
 
+st.subheader("Prophet + LSTM Ensemble Forecast")
+
+if "ensemble_forecast_df" in locals():
+    st.line_chart(
+        ensemble_forecast_df.set_index("Date")
+    )
+else:
+    st.warning("Ensemble forecast is not available.")
+
+st.subheader("LSTM Sales Forecast")
+
+if "lstm_predictions" in locals():
+    lstm_forecast_df = pd.DataFrame({
+        "Day": range(1, len(lstm_predictions) + 1),
+        "Predicted Sales": lstm_predictions
+    })
+
+    st.line_chart(
+        lstm_forecast_df.set_index("Day")
+    )
+else:
+    st.warning("LSTM forecast is not available.")
+
 st.subheader("Inventory Risk Analysis")
 
 product_stock = df.groupby("Description").agg(
@@ -422,7 +525,8 @@ st.write("Transactions in the final 90 days:", len(future_data))
 customer_history=feature_data.groupby("Customer ID").agg(
 Recency=("InvoiceDate", lambda x:(cutoff_date-x.max()).days),
 Frequency=("Invoice","nunique"),
-Monetary=("TotalAmount","sum")
+Monetary=("TotalAmount","sum"),
+Tenure=("InvoiceDate", lambda x:(cutoff_date - x.min()).days)
 ).reset_index()
 
 st.subheader("Customer Churn Model-Customer Data")
@@ -441,10 +545,10 @@ st.dataframe(customer_history.head(10))
 
 st.write("Churn label counts:")
 st.write(customer_history["Churn"].value_counts())
-
-features = ["Recency","Frequency","Monetary"]
+features = ["Recency","Frequency","Monetary","Tenure"]
 X = customer_history[features]
 y = customer_history["Churn"]
+st.write("Churn class counts:", y.value_counts().to_dict())
 
 st.write("Number of customers:", len(customer_history))
 st.write("Number of model features:", len(features))
@@ -472,6 +576,15 @@ model = RandomForestClassifier(
     class_weight="balanced"
 )
 model.fit(X_train, y_train)
+st.subheader("Churn Model Feature Importance")
+
+feature_importance = pd.DataFrame({
+    "Feature": X_train.columns,
+    "Importance": model.feature_importances_
+}).sort_values("Importance", ascending=False)
+
+st.dataframe(feature_importance)
+st.write("Total Feature Importance:", round(feature_importance["Importance"].sum(), 4))
 
 predictions = model.predict(X_test)
 auc = roc_auc_score(y_test, model.predict_proba(X_test)[:, 1])
